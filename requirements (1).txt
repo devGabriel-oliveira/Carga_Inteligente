@@ -1,0 +1,4 @@
+streamlit>=1.37
+openrouteservice>=2.3.3
+folium>=0.17
+streamlit-folium>=0.22
