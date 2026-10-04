@@ -1,5 +1,21 @@
+# -*- coding: utf-8 -*-
+"""
+Rota Inteligente - ATL / Autoport (Streamlit)
+=============================================
+Planeja a rota da cegonha e a montagem de carga (LIFO), usando:
+  - OpenRouteService (ORS): geocodificacao, matriz de distancia REAL por estrada
+    e geometria do trajeto (perfil de caminhao: driving-hgv).
+  - Otimizacao da ordem das entregas minimizando COMBUSTIVEL (nao so km):
+        combustivel = base_L/km * km  +  extra_L/km_por_t * (peso a bordo) * km
+    -> isso premia soltar carga pesada cedo (deixa a cegonha leve nos trechos longos).
+  - Mapa real (folium) + desenho da cegonha (SVG) no visual AUTOPORT.
 
-
+Como rodar:
+  1) pip install -r requirements.txt
+  2) crie .streamlit/secrets.toml com:  ORS_API_KEY = "sua_chave"
+     (chave gratuita em https://openrouteservice.org/dev/#/signup)
+  3) streamlit run app.py
+"""
 
 import itertools
 import streamlit as st
@@ -276,6 +292,12 @@ if cc1.button("➕ Adicionar parada"):
 calcular = cc2.button("Calcular rota e carga", type="primary", use_container_width=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
+import urllib.parse
+
+# ----------------------------------------------------------------------------
+# 1) CALCULO: roda so no clique e SALVA em session_state.
+#    (Sem isso, o rerun do st_folium zera 'calcular' e o resultado some em ~1s.)
+# ----------------------------------------------------------------------------
 if calcular:
     paradas = [p for p in st.session_state.paradas if p["cidade"].strip()]
     total = sum(p["qtd"] for p in paradas)
@@ -308,28 +330,50 @@ if calcular:
             geo = None
             st.info(f"Rota calculada, mas não consegui desenhar a geometria: {e}")
 
+        carga = montar_carga(ordem_nomes, qtds_por_nome)
+        segs = [origem] + ordem_nomes + ([destino] if destino.strip().lower() != ordem_nomes[-1].strip().lower() else [])
+        maps_url = "https://www.google.com/maps/dir/" + "/".join(urllib.parse.quote(s) for s in segs)
+
+    # guarda tudo que a tela precisa (so dados serializaveis)
+    st.session_state["res"] = {
+        "origem": origem, "destino": destino, "total": total, "km": km, "litros": litros,
+        "custo": litros * preco_diesel, "reordenou": ordem != ordem_km, "km_so": km_so,
+        "ordem": list(ordem), "nomes": nomes, "qtds": qtds,
+        "coord_o": coord_o, "coord_d": coord_d, "coord_p": coord_p, "geo": geo,
+        "carga": carga, "maps_url": maps_url,
+    }
+
+# ----------------------------------------------------------------------------
+# 2) RENDER: roda sempre que existir resultado salvo (sobrevive aos reruns).
+# ----------------------------------------------------------------------------
+res = st.session_state.get("res")
+if not res:
+    st.info("Preencha o trajeto e clique em **Calcular rota e carga**.")
+else:
+    origem = res["origem"]; destino = res["destino"]
+    ordem = res["ordem"]; nomes = res["nomes"]; qtds = res["qtds"]
+    coord_o = res["coord_o"]; coord_d = res["coord_d"]; coord_p = res["coord_p"]; geo = res["geo"]
+
     # ----- métricas -----
-    custo = litros * preco_diesel
     st.markdown(f"""
     <div class="ri-stats">
-      <div class="ri-st"><div class="v">{total}</div><div class="l">Carros</div></div>
-      <div class="ri-st"><div class="v">{km:,.0f} km</div><div class="l">Distância (estrada)</div></div>
-      <div class="ri-st"><div class="v">{litros:,.0f} L</div><div class="l">Combustível</div></div>
-      <div class="ri-st"><div class="v">R$ {custo:,.0f}</div><div class="l">Custo diesel</div></div>
+      <div class="ri-st"><div class="v">{res['total']}</div><div class="l">Carros</div></div>
+      <div class="ri-st"><div class="v">{res['km']:,.0f} km</div><div class="l">Distância (estrada)</div></div>
+      <div class="ri-st"><div class="v">{res['litros']:,.0f} L</div><div class="l">Combustível</div></div>
+      <div class="ri-st"><div class="v">R$ {res['custo']:,.0f}</div><div class="l">Custo diesel</div></div>
     </div>
     """.replace(",", "."), unsafe_allow_html=True)
 
-    if ordem != ordem_km:
-        st.success(f"Ordem por combustível otimizada (vs. {km_so:,.0f} km da menor distância pura).".replace(",", "."))
+    if res["reordenou"]:
+        st.success(f"Ordem por combustível otimizada (vs. {res['km_so']:,.0f} km da menor distância pura).".replace(",", "."))
 
     # ----- fluxo da rota -----
     def circ(color, inner):
         return f'<div class="ri-circ" style="background:{color}">{inner}</div>'
     flow = f'<div class="ri-node">{circ(NAVY,"●")}<div class="ri-lbl">{origem.split("/")[0]}</div><div class="ri-sub">Partida</div></div>'
     for i, p in enumerate(ordem):
-        cor = COLORS[i % 8]
         flow += '<div class="ri-arrow"></div>'
-        flow += (f'<div class="ri-node">{circ(cor, qtds[p-1])}'
+        flow += (f'<div class="ri-node">{circ(COLORS[i % 8], qtds[p-1])}'
                  f'<div class="ri-lbl">{nomes[p-1].split("/")[0]}</div>'
                  f'<div class="ri-sub">{i+1}ª · {qtds[p-1]} veíc.</div></div>')
     flow += '<div class="ri-arrow"></div>'
@@ -351,13 +395,12 @@ if calcular:
                                                f'justify-content:center;font-weight:700;font-size:12px">{i+1}</div>')).add_to(fmap)
     folium.Marker([coord_d[1], coord_d[0]], tooltip=f"Destino: {destino}",
                   icon=folium.Icon(color="darkblue", icon="flag")).add_to(fmap)
-    st_folium(fmap, height=420, use_container_width=True)
+    st_folium(fmap, height=420, use_container_width=True, returned_objects=[])
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ----- cegonha (desenho) -----
-    carga = montar_carga(ordem_nomes, qtds_por_nome)
     asgn = {}
-    for row in carga:
+    for row in res["carga"]:
         asgn[row["pos"]] = {"cidade": row["entrega"].split("/")[0], "ord": row["ordem_descarga"],
                             "cor": COLORS[(row["ordem_entrega"] - 1) % 8]}
     st.markdown('<div class="ri-card"><h3>Cegonha &nbsp;<span style="font-weight:500;color:#8896A8;font-size:11px">vista lateral · nº = ordem de descarga</span></h3>', unsafe_allow_html=True)
@@ -367,14 +410,8 @@ if calcular:
     # ----- matriz de carga -----
     st.markdown('<div class="ri-card"><h3>Matriz de carga</h3>', unsafe_allow_html=True)
     tabela = [{"Posição": r["pos"], "Piso": r["piso"], "Entrega": r["entrega"],
-               "Ordem entrega": r["ordem_entrega"], "Ordem descarga": r["ordem_descarga"]} for r in carga]
+               "Ordem entrega": r["ordem_entrega"], "Ordem descarga": r["ordem_descarga"]} for r in res["carga"]]
     st.dataframe(tabela, use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ----- Google Maps -----
-    segs = [origem] + ordem_nomes + ([destino] if destino.strip().lower() != ordem_nomes[-1].strip().lower() else [])
-    import urllib.parse
-    url = "https://www.google.com/maps/dir/" + "/".join(urllib.parse.quote(s) for s in segs)
-    st.link_button("Abrir no Google Maps", url)
-else:
-    st.info("Preencha o trajeto e clique em **Calcular rota e carga**.")
+    st.link_button("Abrir no Google Maps", res["maps_url"])
