@@ -3,3 +3,4 @@ openrouteservice>=2.3.3
 folium>=0.17
 streamlit-folium>=0.22
 pandas>=2.0
+requests>=2.31
