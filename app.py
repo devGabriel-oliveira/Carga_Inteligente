@@ -215,6 +215,27 @@ def coords_da_geometria(feats):
             for part in g["coordinates"]: pts+=part
     return pts
 
+# espelhos do Overpass (tenta em ordem; o principal vive sobrecarregado/bloqueado)
+OVERPASS_MIRRORS=[
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.openstreetmap.ru/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+
+def _overpass(q):
+    """Consulta Overpass tentando vários espelhos. Erra só se todos falharem."""
+    erros=[]
+    for url in OVERPASS_MIRRORS:
+        try:
+            r=requests.post(url, data={"data":q}, timeout=30,
+                            headers={"User-Agent":"RotaInteligente-ATL/1.0"})
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            erros.append(f"{url.split('/')[2]}: {e}")
+    raise RuntimeError("Nenhum servidor Overpass respondeu. " + " | ".join(erros))
+
 def pedagios_osm(feats, raio_km=0.5):
     """Praças de pedágio (barrier=toll_booth) do OpenStreetMap ao longo da rota.
     Retorna lista de {nome,lat,lon}. SEM valores de tarifa. Pode falhar/variar."""
@@ -223,8 +244,7 @@ def pedagios_osm(feats, raio_km=0.5):
     lons=[p[0] for p in pts]; lats=[p[1] for p in pts]
     s,w,n,e=min(lats),min(lons),max(lats),max(lons)
     q=f'[out:json][timeout:25];node["barrier"="toll_booth"]({s-0.02},{w-0.02},{n+0.02},{e+0.02});out;'
-    r=requests.post("https://overpass-api.de/api/interpreter", data={"data":q}, timeout=35)
-    els=r.json().get("elements",[])
+    els=_overpass(q).get("elements",[])
     # amostra os vértices para acelerar
     amostra=pts[::max(1,len(pts)//800)]
     out=[]; vistos=set()
