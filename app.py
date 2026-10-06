@@ -14,6 +14,8 @@ Rodar:
 
 import itertools
 import math
+import os
+import base64
 import urllib.parse
 import requests
 import pandas as pd
@@ -23,7 +25,7 @@ import folium
 from streamlit_folium import st_folium
 
 # ---------------------------------------------------------------- paleta
-NAVY="#0C1B2E"; ACCENT="#C8102E"; ALT="#2563EB"; FG="#0F1A2E"; FG2="#4B5C72"
+NAVY="#0C1B2E"; ACCENT="#E30613"; ALT="#2563EB"; FG="#0F1A2E"; FG2="#4B5C72"
 FG3="#8896A8"; BORDER="#E2E6ED"; CARD="#FFFFFF"; CARD_ALT="#F8FAFC"
 COLORS=["#3B82F6","#10B981","#F59E0B","#8B5CF6","#EF4444","#06B6D4","#6366F1","#EC4899"]
 
@@ -75,18 +77,21 @@ st.markdown("""
 <style>
 #MainMenu, footer, header[data-testid="stHeader"]{visibility:hidden;height:0;}
 .block-container{padding-top:1.6rem;padding-bottom:3rem;max-width:1100px;}
-.ri-header{background:#0C1B2E;border-radius:14px;padding:20px 24px;display:flex;align-items:center;
- gap:14px;margin-bottom:22px;flex-wrap:wrap;min-height:72px;}
-.ri-mark{width:40px;height:40px;background:#C8102E;border-radius:9px;display:flex;align-items:center;
- justify-content:center;font-weight:800;color:#fff;font-size:15px;flex-shrink:0;}
+.ri-header{background:#0C1B2E;border-radius:14px;padding:18px 26px;display:flex;align-items:center;
+ gap:18px;margin-bottom:24px;flex-wrap:wrap;min-height:78px;box-shadow:0 2px 10px rgba(12,27,46,.12);}
+.ri-logo{height:52px;width:auto;flex-shrink:0;}
+.ri-mark{width:44px;height:44px;background:#E30613;border-radius:10px;display:flex;align-items:center;
+ justify-content:center;font-weight:800;color:#fff;font-size:16px;flex-shrink:0;}
 .ri-htext{display:flex;flex-direction:column;line-height:1.25;}
-.ri-title{font-size:22px;font-weight:800;color:#fff;letter-spacing:-.2px;padding:1px 0;}
-.ri-title b{color:#C8102E;}
-.ri-subt{font-size:12px;color:rgba(255,255,255,.55);font-weight:500;}
-.ri-tag{margin-left:auto;font-size:11px;font-weight:700;color:rgba(255,255,255,.45);
- letter-spacing:2px;text-transform:uppercase;align-self:flex-start;}
-.ri-h{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:700;color:#0F1A2E;margin:2px 0 14px;}
-.ri-h .sub{font-weight:500;color:#8896A8;font-size:11px;margin-left:auto;}
+.ri-title{font-size:23px;font-weight:800;color:#fff;letter-spacing:-.2px;padding:1px 0;}
+.ri-title b{color:#E30613;}
+.ri-subt{font-size:12.5px;color:rgba(255,255,255,.6);font-weight:500;}
+.ri-tag{margin-left:auto;font-size:11px;font-weight:700;color:rgba(255,255,255,.5);
+ letter-spacing:2px;text-transform:uppercase;align-self:center;}
+.ri-h{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:800;color:#0C1B2E;
+ margin:2px 0 16px;padding-bottom:10px;border-bottom:2px solid #F0F2F6;}
+.ri-h::before{content:"";width:4px;height:20px;background:#E30613;border-radius:2px;flex-shrink:0;}
+.ri-h .sub{font-weight:600;color:#8896A8;font-size:11px;margin-left:auto;text-transform:uppercase;letter-spacing:.4px;}
 .ri-stats{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 18px;}
 .ri-st{flex:1;min-width:140px;background:#fff;border:1px solid #E2E6ED;border-radius:14px;
  padding:15px 17px;box-shadow:0 1px 3px rgba(12,27,46,.05);}
@@ -111,9 +116,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+@st.cache_data(show_spinner=False)
+def _logo_uri():
+    for p in ("assets/autoport_logo.png", "autoport_logo.png", "assets/logo.png"):
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+    return None
+
+_logo = _logo_uri()
+_marca = f'<img src="{_logo}" class="ri-logo" alt="Autoport"/>' if _logo else '<div class="ri-mark">AP</div>'
 st.markdown(f"""
 <div class="ri-header">
-  <div class="ri-mark">AP</div>
+  {_marca}
   <div class="ri-htext">
     <div class="ri-title">Rota <b>Inteligente</b></div>
     <div class="ri-subt">Rota, pedágios e montagem de carga — cegonha e prancha</div>
