@@ -160,10 +160,12 @@ def municipios(uf):
     except Exception:
         return None
 
-@st.cache_data(show_spinner=False)
+_GEO_CACHE={}  # cache simples no processo (seguro para threads)
 def geocode(cidade, uf, bairro=""):
     """Geocoding ESTRUTURADO: cidade+UF (+bairro) -> (coord, label, ok, msg).
     Valida que a UF retornada bate com a escolhida, evitando cidade errada."""
+    chave=(cidade.strip().lower(), uf, bairro.strip().lower())
+    if chave in _GEO_CACHE: return _GEO_CACHE[chave]
     cli=get_client()
     kw=dict(country="Brazil", region=UFS.get(uf,uf), locality=cidade)
     if bairro.strip(): kw["neighbourhood"]=bairro.strip()
@@ -173,14 +175,21 @@ def geocode(cidade, uf, bairro=""):
         return None, None, False, f"erro ao localizar ({e})"
     feats=r.get("features",[])
     if not feats:
-        return None, None, False, "não encontrada"
+        out=(None, None, False, "não encontrada"); _GEO_CACHE[chave]=out; return out
     f=feats[0]; props=f.get("properties",{})
     lon,lat=f["geometry"]["coordinates"]
-    reg=(props.get("region_a") or "").upper()
-    label=props.get("label","")
+    reg=(props.get("region_a") or "").upper(); label=props.get("label","")
     if reg and reg!=uf:
-        return (lon,lat), label, False, f"retornou {reg}, não {uf} — verifique cidade/UF"
-    return (lon,lat), label, True, label
+        out=((lon,lat), label, False, f"retornou {reg}, não {uf} — verifique cidade/UF")
+    else:
+        out=((lon,lat), label, True, label)
+    _GEO_CACHE[chave]=out; return out
+
+def geocode_paralelo(locais):
+    """Geocodifica vários locais ao mesmo tempo. locais = lista de (cidade,uf,bairro)."""
+    import concurrent.futures as cf
+    with cf.ThreadPoolExecutor(max_workers=6) as ex:
+        return list(ex.map(lambda L: geocode(*L), locais))
 
 # ---------------------------------------------------------------- distancias / rota
 def hav(a,b):  # [lon,lat] -> km
@@ -194,6 +203,14 @@ def matriz_km(coords):
     r=get_client().distance_matrix(locations=coords, profile="driving-hgv",
                                    metrics=["distance"], units="km")
     return r["distances"]
+
+@st.cache_data(show_spinner=False)
+def rota_unica(coords_ord):
+    """Rota principal em UMA chamada (todos os waypoints). Retorna (feats, km, horas)."""
+    r=get_client().directions(coordinates=[list(c) for c in coords_ord],
+                              profile="driving-hgv", format="geojson")
+    f=r["features"][0]; s=f["properties"]["summary"]
+    return [f], s.get("distance",0.0)/1000.0, s.get("duration",0.0)/3600.0
 
 @st.cache_data(show_spinner=False)
 def _leg(a, b, alternativa):
@@ -243,7 +260,7 @@ def _overpass(q):
     erros=[]
     for url in OVERPASS_MIRRORS:
         try:
-            r=requests.post(url, data={"data":q}, timeout=30,
+            r=requests.post(url, data={"data":q}, timeout=12,
                             headers={"User-Agent":"RotaInteligente-ATL/1.0"})
             r.raise_for_status()
             return r.json()
@@ -418,9 +435,8 @@ with st.container(border=True):
             "Cidade":st.column_config.TextColumn("Cidade", width="large"),
             "Bairro":st.column_config.TextColumn("Bairro", width="medium"),
             "Carros":st.column_config.NumberColumn("Carros", min_value=1, max_value=11, step=1)})
-    o1,o2=st.columns(2)
-    calc_alt=o1.checkbox("Calcular rota alternativa", value=True)
-    calc_toll=o2.checkbox("Identificar praças de pedágio (OpenStreetMap, sem valores)", value=True)
+    st.caption("Rota alternativa e praças de pedágio ficam como botões no resultado "
+               "(não atrasam o cálculo principal).")
 
 with st.expander("Ajustes avançados (gestor) — consumo e prioridades das posições"):
     st.markdown("**Consumo do veículo** (estima combustível e escolhe a ordem que gasta menos)")
@@ -466,17 +482,18 @@ if calcular:
         st.warning("Acima de 9 paradas a força bruta fica lenta.")
 
     with st.spinner("Localizando endereços e calculando a rota..."):
-        # geocode + validacao
+        # geocode EM PARALELO (origem, destino e paradas de uma vez)
+        locais=[(origem["cidade"],origem["uf"],origem["bairro"]),
+                (destino["cidade"],destino["uf"],destino["bairro"])]+\
+               [(p["cidade"],p["uf"],p["bairro"]) for p in paradas]
+        geos=geocode_paralelo(locais)
+        (co,lo,ok,msg),(cd,ld,okd,msgd)=geos[0],geos[1]
+        cps=[g[0] for g in geos[2:]]; labels=[g[1] for g in geos[2:]]
         problemas=[]
-        co,lo,ok,msg=geocode(origem["cidade"],origem["uf"],origem["bairro"])
         if not ok: problemas.append(f"Origem ({origem['cidade']}/{origem['uf']}): {msg}")
-        cd,ld,okd,msgd=geocode(destino["cidade"],destino["uf"],destino["bairro"])
         if not okd: problemas.append(f"Destino ({destino['cidade']}/{destino['uf']}): {msgd}")
-        cps=[]; labels=[]
-        for p in paradas:
-            c,l,o,m=geocode(p["cidade"],p["uf"],p["bairro"])
-            cps.append(c); labels.append(l)
-            if not o: problemas.append(f"{p['cidade']}/{p['uf']}: {m}")
+        for p,g in zip(paradas, geos[2:]):
+            if not g[2]: problemas.append(f"{p['cidade']}/{p['uf']}: {g[3]}")
         if problemas:
             st.error("Verifique estas localizações (UF/cidade/bairro):\n\n- " + "\n- ".join(problemas)); st.stop()
 
@@ -493,28 +510,12 @@ if calcular:
         qpn={nomes[j]:qtds[j] for j in range(len(nomes))}
         coords_ord=[co]+[cps[p-1] for p in ordem]+[cd]
 
-        # rota principal (geometria + tempo)
+        # rota principal em UMA chamada só
         try:
-            feats_main,dist_main,tempo_main,_=rota_por_trechos(coords_ord, False)
+            feats_main,dist_main,tempo_main=rota_unica(coords_ord)
         except Exception as e:
             feats_main,dist_main,tempo_main=[],km,0.0
             st.warning(f"Não consegui traçar a geometria da rota: {e}")
-
-        # rota alternativa
-        feats_alt=dist_alt=tempo_alt=None; tem_alt=False
-        if calc_alt and feats_main:
-            try:
-                feats_alt,dist_alt,tempo_alt,tem_alt=rota_por_trechos(coords_ord, True)
-            except Exception:
-                feats_alt=None
-
-        # pedagios (OSM, sem valores)
-        pedagios=None; pedagios_erro=None
-        if calc_toll and feats_main:
-            try:
-                pedagios=pedagios_osm(feats_main)
-            except Exception as e:
-                pedagios_erro=str(e)
 
         carga=montar_carga(ordem_nomes,qpn,positions)
         segs=[lo or origem["cidade"]]+[labels[p-1] or nomes[p-1] for p in ordem]
@@ -528,10 +529,11 @@ if calcular:
         "total":total,"km":km,"km_so":km_so,"reordenou":ordem!=ordem_km,
         "litros":litros,"custo":litros*preco_diesel,
         "ordem":list(ordem),"nomes":nomes,"qtds":qtds,
-        "co":co,"cd":cd,"cps":cps,
+        "co":co,"cd":cd,"cps":cps,"coords_ord":[list(c) for c in coords_ord],
         "feats_main":feats_main,"dist_main":dist_main,"tempo_main":tempo_main,
-        "feats_alt":feats_alt,"dist_alt":dist_alt,"tempo_alt":tempo_alt,"tem_alt":tem_alt,
-        "pedagios":pedagios,"pedagios_erro":pedagios_erro,"calc_toll":calc_toll,
+        # alternativa e pedágios calculados sob demanda (botões no resultado)
+        "feats_alt":None,"dist_alt":None,"tempo_alt":None,"tem_alt":False,
+        "pedagios":None,"pedagios_erro":None,
         "carga":carga,"maps_url":maps_url,
     }
 
@@ -565,6 +567,26 @@ st.markdown('<div class="ri-stats">'
 
 if res["reordenou"]:
     st.success(f"Ordem otimizada por combustível (menor distância pura seria {br(res['km_so'])} km).")
+
+# ---- extras sob demanda (não atrasam o cálculo principal) ----
+bA,bT=st.columns(2)
+if bA.button("Ver rota alternativa", use_container_width=True,
+             disabled=not res["feats_main"] or res["feats_alt"] is not None):
+    with st.spinner("Calculando rota alternativa..."):
+        try:
+            fa,da,ta,tem=rota_por_trechos(res["coords_ord"], True)
+            res["feats_alt"],res["dist_alt"],res["tempo_alt"],res["tem_alt"]=fa,da,ta,tem
+        except Exception as e:
+            res["tem_alt"]=False; res["feats_alt"]=[]; st.warning(f"Alternativa indisponível: {e}")
+    st.session_state["res"]=res; st.rerun()
+if bT.button("Buscar praças de pedágio", use_container_width=True,
+             disabled=not res["feats_main"] or res["pedagios"] is not None):
+    with st.spinner("Consultando praças de pedágio (OpenStreetMap)..."):
+        try:
+            res["pedagios"]=pedagios_osm(res["feats_main"]); res["pedagios_erro"]=None
+        except Exception as e:
+            res["pedagios"]=None; res["pedagios_erro"]=str(e)
+    st.session_state["res"]=res; st.rerun()
 
 # comparação rota principal x alternativa
 if res["feats_alt"] and res["tem_alt"]:
@@ -628,8 +650,8 @@ with st.container(border=True):
     except Exception as e:
         st.warning(f"Não foi possível desenhar o mapa ({e}). A rota foi calculada; use o Google Maps abaixo.")
 
-# pedagios
-if res["calc_toll"]:
+# pedagios (só aparece depois que o usuário clicou em "Buscar praças de pedágio")
+if res["pedagios"] is not None or res["pedagios_erro"]:
     with st.container(border=True):
         sec_header("toll","Praças de pedágio","OpenStreetMap · sem valores de tarifa")
         if res["pedagios_erro"]:
